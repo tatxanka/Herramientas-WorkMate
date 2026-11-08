@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'self'; style-src file: 'self'; img-src file: 'self' blob: data:; frame-src file:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Herramientas WorkMate</title>
+  <link rel="icon" href="assets/workmate.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/portal.css">
+  <script defer src="js/model.js"></script>
+  <script defer src="js/storage.js"></script>
+  <script defer src="js/ui.js"></script>
+  <script defer src="js/editor.js"></script>
+  <script defer src="js/app.js"></script>
+</head>
+<body>
+  <noscript>Activa JavaScript para utilizar Herramientas WorkMate.</noscript>
+  <main id="gate" class="gate" aria-labelledby="gate-title">
+    <section class="frame gate-frame">
+      <header class="top">
+        <div class="identity"><img src="assets/workmate.svg" alt=""><h1 id="gate-title">Herramientas <span>WorkMate</span></h1></div>
+        <span class="subtitle">Portal local de herramientas</span>
+      </header>
+      <div id="gate-body" class="gate-body"><p>Buscando la configuración local…</p></div>
+      <footer class="gate-footer">Diseñado por Juan Luis Búrdalo · Grupo de herramientas WorkMate</footer>
+    </section>
+  </main>
+  <div id="portal" class="portal frame" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Menú WorkMate">
+      <header class="brand top">
+        <div class="identity"><img src="assets/workmate.svg" alt=""><div class="expanded"><strong>Herramientas <em>WorkMate</em></strong><small>PORTAL LOCAL</small></div></div>
+        <button type="button" id="collapse" class="icon-button" aria-controls="navigation" aria-expanded="true"></button>
+      </header>
+      <div class="account" id="account"></div>
+      <div class="navigation" id="navigation">
+        <div id="quick" class="quick"></div>
+        <nav id="tree" class="tree" aria-label="Catálogo de herramientas"></nav>
+      </div>
+      <div id="manage" class="manage"></div>
+      <footer class="sidebar-footer">
+        <span id="credits-icon" class="compact" title="Diseñado por Juan Luis Búrdalo · Grupo de herramientas WorkMate" aria-label="Diseñado por Juan Luis Búrdalo · Grupo de herramientas WorkMate" role="img">ⓘ</span>
+        <span class="expanded">Diseñado por <strong>Juan Luis Búrdalo</strong><br>Grupo de herramientas WorkMate</span>
+      </footer>
+    </aside>
+    <div id="menu-divider" class="menu-divider" role="separator" tabindex="0" aria-label="Ancho del menú"
+      aria-controls="sidebar" aria-orientation="vertical"></div>
+    <button type="button" id="mobile-backdrop" class="mobile-backdrop" aria-label="Cerrar menú lateral" tabindex="-1"></button>
+    <main id="workspace" class="workspace" aria-label="Área de trabajo">
+      <header id="workspace-top" class="workspace-top top"></header>
+      <div id="edit-bar" class="edit-bar" hidden></div>
+      <div id="content" class="workspace-content">
+        <div id="landing" class="landing"></div>
+        <iframe id="viewer" title="Visor de aplicaciones" hidden></iframe>
+      </div>
+      <footer id="file-status" class="file-status" aria-live="polite"></footer>
+    </main>
+  </div>
+  <div id="notice" role="status" aria-live="polite" class="notice" hidden></div>
+  <dialog id="modal" aria-labelledby="modal-title">
+    <header class="panel-header"><h2 id="modal-title" tabindex="-1"></h2><button id="close-modal" type="button" class="icon-button" aria-label="Cerrar ventana" title="Cerrar ventana">×</button></header>
+    <div id="modal-body"></div>
+  </dialog>
+</body>
+</html>

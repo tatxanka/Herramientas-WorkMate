@@ -1,4 +1,4 @@
-# Local datasets, exports and audit files
+# Local inputs, configuration and generated test output
 *.csv
 *.tsv
 *.xlsx
@@ -6,6 +6,7 @@
 *.xls
 *.xlsb
 *.ods
+*.json
 *.jsonl
 *.local.*
 *.sqlite*
@@ -19,11 +20,9 @@ downloads/
 diagnostics/
 exports/
 fixtures-private/
+/BUSCAR Y COMPARAR/Diseño Buscar y comparar.png
 
 # Development and credentials
-node_modules/
-__pycache__/
-*.pyc
 *.log
 *.tmp
 .env
@@ -31,5 +30,9 @@ __pycache__/
 *.key
 *.pem
 *.pfx
+node_modules/
+__pycache__/
+*.pyc
 Thumbs.db
 .DS_Store
+tests/.work/
