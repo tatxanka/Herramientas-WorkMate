@@ -165,7 +165,7 @@
   async function runJob(type, data, io) {
     const library = type === 'importXlsx' ? await getXlsxLibrary() : undefined;
     io.signal.throwIfAborted();
-    const fallback = () => (library ? createEngine(library) : engine).run(type, data, io);
+    const fallback = () => (library ? createEngine(library) : engine).run(type, data, { ...io, mainThread: true });
     let worker;
     const librarySource = library ? `(${library.toString()})` : '';
     const url = URL.createObjectURL(new Blob([`(${createEngine.toString()})(${librarySource}).listen();`], { type: 'text/javascript' }));
@@ -214,6 +214,41 @@
 
   function defaultOptions() { return { caseFold: false, trim: false, accents: false }; }
 
+  function sharesTopOrigin() {
+    try { return Boolean(window.top.document); }
+    catch { return false; }
+  }
+
+  const STAGED_LIMIT = 512 * 1024 * 1024;
+  const STAGED_TTL = 10 * 60 * 1000;
+
+  async function stageDownload(bytes) {
+    if (!sharesTopOrigin() || !navigator.storage?.getDirectory || bytes > STAGED_LIMIT) return null;
+    let directory;
+    try {
+      const root = await navigator.storage.getDirectory();
+      const quota = await navigator.storage.estimate?.();
+      if (quota?.quota !== undefined && quota.quota - (quota.usage ?? 0) < bytes) {
+        throw new Error('No hay espacio temporal suficiente para esta descarga. Usa el guardado directo o libera espacio en el navegador.');
+      }
+      directory = await root.getDirectoryHandle('csv-match-exports-v1', { create: true });
+    } catch (error) {
+      if (['SecurityError', 'NotAllowedError', 'NotSupportedError'].includes(error.name)) return null;
+      throw error;
+    }
+    for await (const [name, entry] of directory.entries()) {
+      const created = /^([0-9]{13})-[0-9a-f-]{36}\.csv$/.exec(name);
+      if (entry.kind === 'file' && created && Date.now() - Number(created[1]) > STAGED_TTL) {
+        await directory.removeEntry(name).catch(() => {});
+      }
+    }
+    const key = `${Date.now()}-${crypto.randomUUID()}.csv`;
+    const handle = await directory.getFileHandle(key, { create: true });
+    const discard = () => directory.removeEntry(key).catch(() => {});
+    try { return { handle, writer: await handle.createWritable({ mode: 'exclusive' }), discard }; }
+    catch (error) { await discard(); throw error; }
+  }
+
   class CsvMatch extends HTMLElement {
     constructor() {
       super();
@@ -232,7 +267,7 @@
       this.cancelButton = this.$('.cancel');
       this.progressPanel = this.$('.progress-panel');
       this.resultsPanel = this.$('.results');
-      this.downloadURL = null;
+      this.downloadURLs = new Set();
       this.bind();
       this.renderMode();
     }
@@ -241,7 +276,13 @@
 
     bind() {
       this.panels.forEach((panel, index) => {
-        panel.querySelector('.file-input').addEventListener('change', ({ target }) => {
+        const input = panel.querySelector('.file-input');
+        input.addEventListener('click', event => {
+          if (!event.isTrusted || this.job || !sharesTopOrigin() || typeof window.showOpenFilePicker !== 'function') return;
+          event.preventDefault();
+          this.pickInput(index, input);
+        });
+        input.addEventListener('change', ({ target }) => {
           const file = target.files[0];
           target.value = '';
           if (file) this.load(index, file);
@@ -287,7 +328,8 @@
 
     disconnectedCallback() {
       this.job?.controller.abort();
-      this.releaseDownload();
+      for (const url of this.downloadURLs) URL.revokeObjectURL(url);
+      this.downloadURLs.clear();
     }
 
     switchMode(mode) {
@@ -330,9 +372,16 @@
       this.updateControls();
     }
 
-    notice(message, status = false) {
+    notice(message, status = false, openTool = false) {
       const node = this.$('.notice');
       node.textContent = message;
+      if (openTool) {
+        const link = element('a', 'Abrir CSV MATCH en otra pestaña');
+        link.href = new URL('../index.html', appURL).href;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        node.append(' ', link);
+      }
       node.classList.toggle('info', status);
       node.hidden = !message;
     }
@@ -370,12 +419,24 @@
       });
     }
 
-    async load(index, file) {
+    async pickInput(index, input) {
+      try {
+        const [handle] = await window.showOpenFilePicker({ types: [{ description: 'CSV o Excel', accept: {
+          'text/csv': ['.csv'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+        } }] });
+        if (handle) await this.load(index, await handle.getFile(), handle);
+      } catch (error) {
+        if (['SecurityError', 'NotSupportedError', 'NotAllowedError'].includes(error.name)) input.click();
+        else if (error.name !== 'AbortError') this.notice('No se pudo abrir el archivo seleccionado.');
+      }
+    }
+
+    async load(index, file, handle) {
       this.invalidate();
       await this.withJob(`Leyendo el archivo ${index + 1}`, async io => {
         const format = /\.xlsx$/i.test(file.name) ? 'importXlsx' : 'inspect';
         const metadata = await runJob(format, file, io);
-        this.files[index] = { file, originalFile: file, ...metadata };
+        this.files[index] = { file, originalFile: file, handle, ...metadata };
         this.config.compare.columns[index] = [0];
         this.config.search.columns[index] = null;
         if (!this.files[1 - index]) this.config.search.scope = String(index);
@@ -507,7 +568,7 @@
       } catch (error) {
         this.progressPanel.hidden = true;
         const cancelled = controller.signal.aborted || error.name === 'AbortError';
-        this.notice(cancelled ? 'Operación cancelada.' : error.message, cancelled);
+        this.notice(cancelled ? 'Operación cancelada.' : error.message, cancelled, !cancelled && error.openTool);
       } finally {
         clearInterval(timer);
         this.cancelButton.hidden = true;
@@ -539,6 +600,7 @@
       const columns = files.map((file, index) => file ? this.selectedColumns(index) : []);
       this.invalidate();
       await this.withJob('Preparando el procesamiento…', async io => {
+        await this.validateInputs(active);
         const delimiters = this.files.map(loaded => loaded?.delimiter);
         this.result = await runJob(mode, { ...config, files, columns, delimiters }, io);
         const counts = this.result.totals ?? this.result.reports.map(report => report?.count);
@@ -621,37 +683,95 @@
         });
         body.append(previews);
       }
+      body.append(element('p', 'El CSV conserva los valores originales. Si los datos no son de confianza, importa las columnas como texto para evitar fórmulas en Excel.', 'instructions'));
       this.resultsPanel.hidden = false;
     }
 
-    releaseDownload() {
-      if (this.downloadURL) URL.revokeObjectURL(this.downloadURL);
-      this.downloadURL = null;
+    async validateInputs(indices) {
+      for (const index of indices) {
+        const { handle, originalFile } = this.files[index];
+        try {
+          if (handle) {
+            const current = await handle.getFile();
+            if (current.size !== originalFile.size || current.lastModified !== originalFile.lastModified) throw new Error();
+          }
+          await originalFile.slice(0, 1).arrayBuffer();
+        } catch {
+          this.invalidate();
+          throw new Error(`El archivo del panel ${index + 1} cambió o dejó de estar disponible. Vuelve a cargarlo.`);
+        }
+      }
+    }
+
+    requestDownload(name, file, discard) {
+      const url = URL.createObjectURL(file);
+      if (!discard) this.bufferedDownloadURL = url;
+      this.downloadURLs.add(url);
+      const link = element('a');
+      link.href = url;
+      link.download = name;
+      this.ui.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        this.downloadURLs.delete(url);
+        if (this.bufferedDownloadURL === url) this.bufferedDownloadURL = null;
+        discard?.();
+      }, discard ? STAGED_TTL : 15000);
     }
 
     async export(name, data) {
       await this.withJob('Preparando la exportación…', async io => {
         let writer;
+        let stage;
+        let handedOff = false;
         const chunks = [];
         try {
-          if (window.self === window.top && typeof window.showSaveFilePicker === 'function') {
-            let handle;
+          let handle;
+          const originals = this.files.filter(Boolean);
+          if (sharesTopOrigin() && typeof window.showSaveFilePicker === 'function' &&
+            originals.every(loaded => typeof loaded.handle?.isSameEntry === 'function')) {
             try {
               handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'Archivo CSV', accept: { 'text/csv': ['.csv'] } }] });
             } catch (error) {
               if (error.name !== 'SecurityError' && error.name !== 'NotSupportedError') throw error;
             }
-            if (handle) {
-              io.signal.throwIfAborted();
-              const destination = await handle.getFile();
-              if (this.files.some(loaded => loaded && loaded.originalFile.name === destination.name &&
-                loaded.originalFile.size === destination.size && loaded.originalFile.lastModified === destination.lastModified)) {
+          }
+          io.signal.throwIfAborted();
+          if (handle) {
+            for (const loaded of originals) {
+              if (await loaded.handle.isSameEntry(handle)) {
                 throw new Error('El destino coincide con un archivo cargado. Elige otro nombre para conservar el original.');
               }
-              writer = await handle.createWritable();
             }
           }
-          const report = await runJob('export', { ...data, buffered: !writer }, {
+          await this.validateInputs(this.activeFiles());
+          io.signal.throwIfAborted();
+          if (handle) writer = await handle.createWritable({ mode: 'exclusive' });
+          let measured;
+          if (!writer) {
+            const frame = window.frameElement;
+            if (frame?.hasAttribute('sandbox') && !frame.sandbox.contains('allow-downloads')) {
+              throw new Error('Este iframe tiene las descargas bloqueadas. Habilita allow-downloads o abre CSV MATCH en una pestaña propia.');
+            }
+            measured = await runJob('export', { ...data, measure: true }, io);
+            if (measured.bytes > engine.BLOB_LIMIT) {
+              stage = await stageDownload(measured.bytes);
+              if (!stage) {
+                const error = new Error(`La salida ocuparía ${sizeLabel(measured.bytes)}. En este contexto la descarga en memoria admite hasta 32 MiB. Usa el guardado directo en Chrome con los originales seleccionados mediante su selector.`);
+                error.openTool = location.protocol === 'file:' && window !== window.top;
+                throw error;
+              }
+              writer = stage.writer;
+            }
+          }
+          if (!writer && this.bufferedDownloadURL) {
+            URL.revokeObjectURL(this.bufferedDownloadURL);
+            this.downloadURLs.delete(this.bufferedDownloadURL);
+            this.bufferedDownloadURL = null;
+          }
+          const report = await runJob('export', { ...data, buffered: !writer, byteLimit: measured?.bytes }, {
             ...io,
             write: async chunk => {
               io.signal.throwIfAborted();
@@ -659,30 +779,27 @@
               else chunks.push(chunk);
             }
           });
+          if (measured && report.bytes !== measured.bytes) throw new Error('El tamaño de la salida cambió. Vuelve a cargar el archivo.');
           io.signal.throwIfAborted();
           this.cancelButton.hidden = true;
           if (writer) {
             this.$('.phase').textContent = 'Guardando el archivo…';
             await writer.close();
             writer = null;
-            this.$('.phase').textContent = 'Archivo guardado';
-          } else {
-            this.releaseDownload();
-            const url = URL.createObjectURL(new Blob(chunks, { type: 'text/csv;charset=utf-8' }));
-            this.downloadURL = url;
-            const link = element('a');
-            link.href = url;
-            link.download = name;
-            this.ui.append(link);
-            link.click();
-            link.remove();
-            setTimeout(() => { if (this.downloadURL === url) this.releaseDownload(); }, 15000);
+          }
+          if (handle) this.$('.phase').textContent = 'Archivo guardado';
+          else {
+            const file = stage ? await stage.handle.getFile() : new Blob(chunks, { type: 'text/csv;charset=utf-8' });
+            this.requestDownload(name, file, stage?.discard);
+            handedOff = true;
             this.$('.phase').textContent = 'Descarga solicitada al navegador';
           }
           this.$('.announce').textContent = `${this.$('.phase').textContent}. ${integer.format(report.count)} registros.`;
         } catch (error) {
           if (writer) await writer.abort().catch(() => {});
           throw error;
+        } finally {
+          if (stage && !handedOff) await stage.discard();
         }
       });
     }

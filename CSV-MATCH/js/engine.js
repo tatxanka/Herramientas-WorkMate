@@ -17,11 +17,15 @@
     const XLSX_FILE_LIMIT = 16 * MiB;
     const XLSX_ARCHIVE_LIMIT = 64 * MiB;
     const XLSX_CELL_LIMIT = 2_000_000;
+    const XLSX_POPULATED_LIMIT = 500_000;
+    const FALLBACK_LIMIT = 512 * 1024;
+    const FALLBACK_XLSX_LIMIT = 256 * 1024;
 
     class Parser {
-      constructor(onRow, delimiter = ',') {
+      constructor(onRow, delimiter = ',', rowLimit = ROW_LIMIT) {
         this.onRow = onRow;
         this.delimiter = delimiter;
+        this.rowLimit = rowLimit;
         this.row = [];
         this.parts = [];
         this.segments = [];
@@ -38,7 +42,7 @@
 
       append(value) {
         this.length += value.length;
-        if (this.length > ROW_LIMIT) this.fail('supera el límite de 8 Mi de unidades UTF-16 por registro.');
+        if (this.length > this.rowLimit) this.fail(`supera el límite de ${this.rowLimit} unidades UTF-16 por registro.`);
         if (value) this.parts.push(value);
         if (this.parts.length === 256) {
           this.segments.push(this.parts.join(''));
@@ -130,13 +134,14 @@
           if (sample.valid) sample.rows++;
           sample.done = !sample.valid || sample.rows === 6;
           return !sample.done;
-        }, delimiter);
+        }, delimiter, job.rowLimit);
         return sample;
       });
       const decoder = new TextDecoder('utf-8', { fatal: true });
-      for (let offset = 0; offset < file.size && candidates.some(sample => !sample.done); offset += BLOCK) {
+      const blockSize = job.mainThread ? 32 * 1024 : BLOCK;
+      for (let offset = 0; offset < file.size && candidates.some(sample => !sample.done); offset += blockSize) {
         job.check();
-        const end = Math.min(file.size, offset + BLOCK);
+        const end = Math.min(file.size, offset + blockSize);
         const bytes = await file.slice(offset, end).arrayBuffer();
         job.check();
         const text = decodeUTF8(decoder, bytes, end < file.size);
@@ -175,10 +180,11 @@
             }
             return callbacks.row?.(row, count++);
           }
-        }, delimiter);
-        for (let offset = 0; offset < file.size; offset += BLOCK) {
+        }, delimiter, job.rowLimit);
+        const blockSize = job.mainThread ? 32 * 1024 : BLOCK;
+        for (let offset = 0; offset < file.size; offset += blockSize) {
           job.check();
-          const end = Math.min(file.size, offset + BLOCK);
+          const end = Math.min(file.size, offset + blockSize);
           const bytes = await file.slice(offset, end).arrayBuffer();
           job.check();
           if (!parser.push(decodeUTF8(decoder, bytes, true))) return { count, complete: false, delimiter };
@@ -495,7 +501,7 @@
       return row.map(value => /[",;\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(',') + '\r\n';
     }
 
-    function validateXlsxArchive(bytes) {
+    async function validateXlsxArchive(bytes, job) {
       const view = new DataView(bytes);
       const size = view.byteLength;
       const invalid = () => new Error('El archivo no contiene un XLSX válido.');
@@ -509,15 +515,119 @@
       const count = view.getUint16(end + 10, true);
       const directorySize = view.getUint32(end + 12, true);
       let entry = view.getUint32(end + 16, true);
-      if (!count || count !== view.getUint16(end + 8, true) || entry + directorySize !== end) throw invalid();
+      if (!count || count > 4096 || count !== view.getUint16(end + 8, true) || entry + directorySize !== end) throw invalid();
+      const directoryStart = entry;
+      const files = [];
+      const names = new Set();
+      const decoder = new TextDecoder();
+      const limit = job.mainThread ? MiB : XLSX_ARCHIVE_LIMIT;
       let expandedSize = 0;
       for (let index = 0; index < count; index++) {
         if (entry + 46 > end || view.getUint32(entry, true) !== 0x02014b50) throw invalid();
-        expandedSize += view.getUint32(entry + 24, true);
-        if (expandedSize > XLSX_ARCHIVE_LIMIT) throw new Error('El XLSX supera el límite interno de 64 MiB. Guárdalo como CSV para cargarlo.');
-        entry += 46 + view.getUint16(entry + 28, true) + view.getUint16(entry + 30, true) + view.getUint16(entry + 32, true);
+        const flags = view.getUint16(entry + 8, true);
+        const method = view.getUint16(entry + 10, true);
+        const crc = view.getUint32(entry + 16, true);
+        const compressed = view.getUint32(entry + 20, true);
+        const expanded = view.getUint32(entry + 24, true);
+        const nameLength = view.getUint16(entry + 28, true);
+        const local = view.getUint32(entry + 42, true);
+        const next = entry + 46 + nameLength + view.getUint16(entry + 30, true) + view.getUint16(entry + 32, true);
+        if (!nameLength || next > end || local + 30 > directoryStart || view.getUint32(local, true) !== 0x04034b50 ||
+          view.getUint16(entry + 34, true) !== 0 || flags & 0x2041 || (method !== 0 && method !== 8) ||
+          view.getUint16(local + 6, true) !== flags || view.getUint16(local + 8, true) !== method ||
+          view.getUint16(local + 26, true) !== nameLength) throw invalid();
+        const start = local + 30 + nameLength + view.getUint16(local + 28, true);
+        let stop = start + compressed;
+        if (stop > directoryStart) throw invalid();
+        for (let i = 0; i < nameLength; i++) {
+          if (view.getUint8(local + 30 + i) !== view.getUint8(entry + 46 + i)) throw invalid();
+        }
+        const name = decoder.decode(new Uint8Array(bytes, entry + 46, nameLength));
+        if (names.has(name)) throw invalid();
+        names.add(name);
+        if (flags & 8) {
+          if (stop + 12 > directoryStart) throw invalid();
+          if (view.getUint32(stop, true) === 0x08074b50) stop += 4;
+          if (stop + 12 > directoryStart || view.getUint32(stop, true) !== crc ||
+            view.getUint32(stop + 4, true) !== compressed || view.getUint32(stop + 8, true) !== expanded) throw invalid();
+          stop += 12;
+        } else if (view.getUint32(local + 14, true) !== crc || view.getUint32(local + 18, true) !== compressed ||
+          view.getUint32(local + 22, true) !== expanded) throw invalid();
+        expandedSize += expanded;
+        if (expandedSize > limit) throw new Error(`El XLSX supera el límite interno de ${limit / MiB} MiB${job.mainThread ? ' sin Worker' : ''}. Guárdalo como CSV para cargarlo.`);
+        files.push({ name, local, start, compressed, stop, method, expanded, crc });
+        entry = next;
       }
       if (entry !== end) throw invalid();
+      files.sort((a, b) => a.local - b.local);
+      const crcTable = Uint32Array.from({ length: 256 }, (_, code) => {
+        for (let bit = 0; bit < 8; bit++) code = (code >>> 1) ^ (code & 1 ? 0xedb88320 : 0);
+        return code;
+      });
+      let previous = 0;
+      let populated = 0;
+      const populatedLimit = job.mainThread ? 20_000 : XLSX_POPULATED_LIMIT;
+      for (const file of files) {
+        if (file.local < previous) throw invalid();
+        previous = file.stop;
+        if (file.method === 0 && file.expanded !== file.compressed) throw invalid();
+        if (file.method === 8 && typeof DecompressionStream !== 'function') {
+          throw new Error('Este navegador no puede verificar la compresión del XLSX. Abre el archivo como CSV o usa Chrome actualizado.');
+        }
+        const input = new Uint8Array(bytes, file.start, file.compressed);
+        let offset = 0;
+        const stream = new ReadableStream({
+          pull(controller) {
+            if (offset === input.length) controller.close();
+            else {
+              const end = Math.min(input.length, offset + (file.method === 8 ? 4096 : 65536));
+              controller.enqueue(input.subarray(offset, end));
+              offset = end;
+            }
+          }
+        });
+        const reader = (file.method === 8 ? stream.pipeThrough(new DecompressionStream('deflate-raw')) : stream).getReader();
+        let crc = 0xffffffff;
+        let actual = 0;
+        let xmlDecoder;
+        let tail = '';
+        const isXml = /\.xml$/i.test(file.name);
+        const countCells = (text, final) => {
+          const buffer = tail + text;
+          // Keep enough context for a tag and namespace prefix split across chunks.
+          const boundary = final ? buffer.length : Math.max(0, buffer.length - 64);
+          for (const tag of buffer.matchAll(/<(?:[A-Za-z_][\w.-]{0,32}:)?c(?=[\s/>])/g)) {
+            if (tag.index >= boundary) break;
+            if (++populated > populatedLimit) {
+              throw new RangeError(`El XLSX supera ${populatedLimit.toLocaleString('es')} celdas con datos. Guárdalo como CSV para cargarlo.`);
+            }
+          }
+          tail = buffer.slice(boundary);
+        };
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            actual += value.length;
+            if (actual > file.expanded) throw invalid();
+            for (const byte of value) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255];
+            if (isXml) {
+              xmlDecoder ??= new TextDecoder(value[0] === 0xff || value[1] === 0 ? 'utf-16le' :
+                value[0] === 0xfe || value[0] === 0 ? 'utf-16be' : 'utf-8');
+              countCells(xmlDecoder.decode(value, { stream: true }), false);
+            }
+            await job.checkpoint();
+          }
+          if (xmlDecoder) countCells(xmlDecoder.decode(), true);
+          if (actual !== file.expanded || (crc ^ 0xffffffff) >>> 0 !== file.crc) throw invalid();
+        } catch (error) {
+          await reader.cancel().catch(() => {});
+          if (error.name === 'AbortError' || error instanceof RangeError) throw error;
+          throw invalid();
+        } finally {
+          reader.releaseLock();
+        }
+      }
     }
 
     async function importXlsx(file, job) {
@@ -527,7 +637,7 @@
         job.progress('Abriendo el libro XLSX', 0, 0, 0, 0);
         const bytes = await file.arrayBuffer();
         job.check();
-        validateXlsxArchive(bytes);
+        await validateXlsxArchive(bytes, job);
         const xlsx = loadSheetJS();
         let workbook;
         try {
@@ -546,8 +656,9 @@
         if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
           throw new Error('La primera hoja del XLSX tiene un rango de celdas inválido.');
         }
-        if (width > COLUMN_LIMIT || width * height > XLSX_CELL_LIMIT) {
-          throw new Error('La primera hoja supera 1024 columnas o 2 millones de celdas. Guárdala como CSV para cargarla.');
+        const cellLimit = job.mainThread ? 25_000 : XLSX_CELL_LIMIT;
+        if (width > COLUMN_LIMIT || width * height > cellLimit) {
+          throw new Error(`La primera hoja supera 1024 columnas o ${cellLimit.toLocaleString('es')} celdas de rango. Guárdala como CSV para cargarla.`);
         }
         const encoder = new TextEncoder();
         const parts = [];
@@ -594,7 +705,7 @@
       }
     }
 
-    async function exportCsv({ file, blocks, invert, expected, total, buffered, delimiter }, job) {
+    async function exportCsv({ file, blocks, invert, expected, total, buffered, delimiter, measure, byteLimit }, job) {
       const bitmap = new Bitmap(blocks);
       const encoder = new TextEncoder();
       let lines = ['\ufeff'];
@@ -614,12 +725,14 @@
             lines = [];
             bytesWritten += data.byteLength;
             if (buffered && bytesWritten > BLOB_LIMIT) {
-              throw new Error('La salida supera el límite de descarga de 32 MiB. Usa un navegador con guardado directo y abre CSV MATCH como página principal.');
+              throw new Error('La descarga en memoria admite hasta 32 MiB. Para archivos mayores, abre CSV MATCH en una pestaña propia.');
             }
-            await job.write(data);
+            if (byteLimit && bytesWritten > byteLimit) throw new Error('La salida excede el límite disponible para esta modalidad.');
+            if (!measure) await job.write(data);
             job.check();
           }
-          job.progress('Generando el archivo CSV', bytes, file.size, count, exported, 'Registros exportados');
+          job.progress(measure ? 'Comprobando el tamaño de la descarga' : 'Generando el archivo CSV',
+            bytes, file.size, count, exported, measure ? 'Registros previstos' : 'Registros exportados');
         }
       }, job, delimiter);
       if (count !== total || exported !== expected) throw new Error('El archivo de origen cambió. Repite la operación antes de exportar.');
@@ -627,10 +740,18 @@
     }
 
     async function run(type, data, io = {}) {
+      if (io.mainThread) {
+        const inputs = data.files ?? [data.file ?? data];
+        const bytes = inputs.reduce((size, file) => size + (file?.size ?? 0), 0);
+        const limit = type === 'importXlsx' ? FALLBACK_XLSX_LIMIT : FALLBACK_LIMIT;
+        if (bytes > limit) throw new Error(`El navegador bloqueó el Worker. El modo alternativo admite ${limit / 1024} KiB por operación.`);
+      }
       const started = performance.now();
       let lastUpdate = -Infinity;
       let lastYield = started;
       const job = {
+        mainThread: io.mainThread,
+        rowLimit: io.mainThread ? 64 * 1024 : ROW_LIMIT,
         check() { io.signal?.throwIfAborted(); },
         async checkpoint() {
           if (performance.now() - lastYield >= 12) {
