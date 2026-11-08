@@ -46,7 +46,7 @@ async function verify(file, kind, expected, scenario) {
   const lines = createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
   for await (const row of lines) {
     if (isHeader) {
-      assert.equal(row, target ? '\ufeffid,referencia,detalle' : '\ufeffid,valor,nota');
+      assert.equal(row, target ? '\ufeffid;referencia;detalle' : '\ufeffid;valor;nota');
       isHeader = false;
       continue;
     }
@@ -55,7 +55,7 @@ async function verify(file, kind, expected, scenario) {
     const exact = id % 4 === 0;
     const partial = id % 4 < 2;
     const pattern = 'K' + (scenario.long ? 'L'.repeat(600) : '') + String(id % scenario.cardinality).padStart(7, '0');
-    assert.equal(row, `${String(id).padStart(7, '0')},${pattern},x`);
+    assert.equal(row, `${String(id).padStart(7, '0')};${pattern};x`);
     if (kind.startsWith('search')) assert.equal(id % scenario.cardinality, 0);
     else if (kind === 'exact') assert.ok(exact);
     else if (kind === 'exactExcluded') assert.ok(!exact);
@@ -85,7 +85,7 @@ async function benchmarkBrowser(browser, files, scenario) {
       assert.equal(await page.locator('.file-settings').nth(index).locator('tbody tr').count(), 10);
     }
     output.previews = elapsed(start);
-    await page.locator('select').selectOption('1');
+    await page.locator('.columns select').selectOption('1');
     await page.locator('.multiselect summary').click();
     for (const [caption, checked] of [['1. id', false], ['2. referencia', true], ['3. detalle', true]]) {
       await page.getByRole('checkbox', { name: caption, exact: true }).setChecked(checked);

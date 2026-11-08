@@ -72,7 +72,7 @@ def audit(args):
         if args.matched:
             exports = {}
             for side, path in [(True, args.matched), (False, args.unmatched)]:
-                header, rows = open_csv(stack, path, ",")
+                header, rows = open_csv(stack, path, args.export_separator)
                 if header != source_header:
                     raise ValueError("Una exportación no conserva la cabecera del origen.")
                 exports[side] = rows
@@ -138,6 +138,7 @@ def main():
     parser.add_argument("--target-columns", nargs="+", type=int, required=True, help="Posiciones desde 1")
     parser.add_argument("--source-separator", choices=[",", ";"], default=",")
     parser.add_argument("--target-separator", choices=[",", ";"], default=",")
+    parser.add_argument("--export-separator", choices=[",", ";"], default=",")
     parser.add_argument("--ignore-case", action="store_true")
     parser.add_argument("--ignore-accents", action="store_true")
     parser.add_argument("--trim", action="store_true")

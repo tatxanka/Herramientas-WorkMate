@@ -11,6 +11,7 @@
     logo: '<path d="M16 22H3V2h12l4 4v5M14 2v5h5M7 8h3M7 12h7M7 16h4"/><circle cx="17" cy="16" r="4"/><path d="m20 19 3 3"/>',
     file: '<path d="M6 2h8l5 5v15H6zM13 2v6h6M9 12h7M9 16h7"/>',
     folder: '<path d="M3 18V6h7l2 2h9v3M3 18l4-8h15l-4 8z"/>',
+    trash: '<path d="M4 6h16M9 6V3h6v3m3 0-1 15H7L6 6m4 4v7m4-7v7"/>',
     settings: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>',
     chart: '<path d="M4 20v-6m5 6v-9m5 9V7m5 13V4"/>',
     check: '<path d="m6 12 4 4 8-8"/>',
@@ -32,7 +33,10 @@
       <div class="file-body">
         <div class="file-line">
           <div class="file-status"><span class="file-check" hidden>${icon('check', 'positive badge')}</span><strong class="file-name">Sin archivo</strong><span class="file-meta"></span></div>
-          <label class="file-picker">${icon('folder')}<span>Seleccionar archivo</span><input class="file-input" type="file" accept=".csv,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="Seleccionar archivo CSV o XLSX en el panel ${number}"></label>
+          <div class="file-actions">
+            <label class="file-picker">${icon('folder')}<span>Seleccionar archivo</span><input class="file-input" type="file" accept=".csv,.xlsx,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="Seleccionar archivo CSV o XLSX en el panel ${number}"></label>
+            <button class="remove-file" type="button" aria-label="Quitar archivo" title="Quitar archivo" hidden>${icon('trash')}</button>
+          </div>
         </div>
         <div class="file-settings" hidden>
           <div class="columns"></div>
@@ -102,7 +106,15 @@
             </div>
           </section>
           <section class="panel results" aria-labelledby="results-title" hidden>
-            <h2 id="results-title">${icon('file')} Resumen de resultados</h2><div class="results-body"></div>
+            <h2 id="results-title">${icon('file')} Resumen de resultados</h2>
+            <div class="export-options">
+              <label for="export-separator">Formato de exportación</label>
+              <select id="export-separator">
+                <option value=";">Excel (España) — punto y coma</option>
+                <option value=",">CSV estándar — coma</option>
+              </select>
+            </div>
+            <div class="results-body"></div>
           </section>
         </div>
       </div>
@@ -277,6 +289,7 @@
     bind() {
       this.panels.forEach((panel, index) => {
         const input = panel.querySelector('.file-input');
+        panel.querySelector('.remove-file').addEventListener('click', () => this.removeFile(index));
         input.addEventListener('click', event => {
           if (!event.isTrusted || this.job || !sharesTopOrigin() || typeof window.showOpenFilePicker !== 'function') return;
           event.preventDefault();
@@ -341,6 +354,7 @@
 
     renderMode() {
       const search = this.mode === 'search';
+      this.$('.frame').dataset.mode = this.mode;
       const config = this.config[this.mode];
       for (const tab of this.tabs) {
         const active = tab.dataset.mode === this.mode;
@@ -403,7 +417,7 @@
       const ready = active.every(index => this.files[index] && this.selectedColumns(index).length) &&
         (!search || Boolean(config.query.trim() && engine.normalizer(config.options)(config.query)));
       this.runButton.disabled = busy || !ready;
-      for (const control of this.ui.querySelectorAll('input, select, [role=tab], .download')) {
+      for (const control of this.ui.querySelectorAll('input, select, [role=tab], .download, .remove-file')) {
         control.disabled = busy;
       }
       for (const details of this.ui.querySelectorAll('details')) {
@@ -432,6 +446,7 @@
     }
 
     async load(index, file, handle) {
+      if (this.job) return;
       this.invalidate();
       await this.withJob(`Leyendo el archivo ${index + 1}`, async io => {
         const format = /\.xlsx$/i.test(file.name) ? 'importXlsx' : 'inspect';
@@ -448,27 +463,55 @@
       });
     }
 
+    removeFile(index) {
+      if (this.job || !this.files[index]) return;
+      this.files[index] = null;
+      this.config.compare.columns[index] = [];
+      this.config.search.columns[index] = null;
+      this.config.search.scope = String(this.files[1 - index] ? 1 - index : 0);
+      this.form.elements.scope.value = this.config.search.scope;
+      this.renderFile(index);
+      this.renderColumns(index);
+      this.invalidate();
+      this.panels[index].querySelector('.file-input').focus();
+      this.$('.announce').textContent = `Archivo ${index + 1} quitado.`;
+    }
+
     renderFile(index) {
       const panel = this.panels[index];
-      const { originalFile: file, columns, rows, count, duplicates, unnamed, sheetName } = this.files[index];
-      panel.querySelector('.file-name').textContent = file.name;
-      const summary = [count === null ? null : `${integer.format(count)} registros`, `${integer.format(columns.length)} columnas`, sizeLabel(file.size)];
-      panel.querySelector('.file-meta').textContent = `(${summary.filter(Boolean).join(', ')})${sheetName ? ` · Hoja: ${sheetName}` : ''}`;
-      panel.querySelector('.file-check').hidden = false;
-      panel.querySelector('.file-picker span').textContent = 'Cambiar archivo';
-      panel.querySelector('.file-input').setAttribute('aria-label', `Cambiar archivo del panel ${index + 1}`);
-      panel.querySelector('.file-hint').hidden = true;
-      panel.querySelector('.file-settings').hidden = false;
+      const loaded = this.files[index];
+      panel.querySelector('.file-name').textContent = loaded?.originalFile.name ?? 'Sin archivo';
+      panel.querySelector('.file-check').hidden = !loaded;
+      panel.querySelector('.file-picker span').textContent = loaded ? 'Cambiar archivo' : 'Seleccionar archivo';
+      const input = panel.querySelector('.file-input');
+      input.setAttribute('aria-label', loaded ? `Cambiar archivo del panel ${index + 1}` : `Seleccionar archivo CSV o XLSX en el panel ${index + 1}`);
+      if (!loaded) input.value = '';
+      panel.querySelector('.remove-file').hidden = !loaded;
+      panel.querySelector('.file-hint').hidden = Boolean(loaded);
+      panel.querySelector('.file-settings').hidden = !loaded;
       const warning = panel.querySelector('.header-warning');
-      warning.textContent = duplicates || unnamed ? 'Hay encabezados repetidos o vacíos. Selecciona las columnas por su posición.' : '';
+      warning.textContent = loaded?.duplicates || loaded?.unnamed ? 'Hay encabezados repetidos o vacíos. Selecciona las columnas por su posición.' : '';
       warning.hidden = !warning.textContent;
-      panel.querySelector('.table-wrap').replaceChildren(table(columns, rows));
+      const metadata = panel.querySelector('.file-meta');
+      const preview = panel.querySelector('.table-wrap');
+      if (loaded) {
+        const { originalFile: file, columns, rows, count, sheetName } = loaded;
+        const summary = [count === null ? null : `${integer.format(count)} registros`, `${integer.format(columns.length)} columnas`, sizeLabel(file.size)];
+        metadata.textContent = `(${summary.filter(Boolean).join(', ')})${sheetName ? ` · Hoja: ${sheetName}` : ''}`;
+        preview.replaceChildren(table(columns, rows));
+      } else {
+        metadata.textContent = '';
+        preview.replaceChildren();
+      }
     }
 
     renderColumns(index) {
       const loaded = this.files[index];
-      if (!loaded) return;
       const mount = this.panels[index].querySelector('.columns');
+      if (!loaded) {
+        mount.replaceChildren();
+        return;
+      }
       const search = this.mode === 'search';
       const single = !search && index === 0;
       const label = element('label', single ? 'Columna de búsqueda' : 'Columnas de búsqueda (una o más)', 'column-label');
@@ -722,6 +765,7 @@
     }
 
     async export(name, data) {
+      const outputDelimiter = this.$('#export-separator').value;
       await this.withJob('Preparando la exportación…', async io => {
         let writer;
         let stage;
@@ -755,7 +799,7 @@
             if (frame?.hasAttribute('sandbox') && !frame.sandbox.contains('allow-downloads')) {
               throw new Error('Este iframe tiene las descargas bloqueadas. Habilita allow-downloads o abre CSV MATCH en una pestaña propia.');
             }
-            measured = await runJob('export', { ...data, measure: true }, io);
+            measured = await runJob('export', { ...data, outputDelimiter, measure: true }, io);
             if (measured.bytes > engine.BLOB_LIMIT) {
               stage = await stageDownload(measured.bytes);
               if (!stage) {
@@ -771,7 +815,7 @@
             this.downloadURLs.delete(this.bufferedDownloadURL);
             this.bufferedDownloadURL = null;
           }
-          const report = await runJob('export', { ...data, buffered: !writer, byteLimit: measured?.bytes }, {
+          const report = await runJob('export', { ...data, outputDelimiter, buffered: !writer, byteLimit: measured?.bytes }, {
             ...io,
             write: async chunk => {
               io.signal.throwIfAborted();

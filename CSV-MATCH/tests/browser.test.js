@@ -58,7 +58,7 @@ test('file:// sin red, Worker, dos modos, descargas, cancelación y vista estrec
   await loaded(page, 2);
   assert.match(await page.locator('.header-warning').first().innerText(), /repetidos/);
   assert.equal(await page.locator('.file-panel').first().locator('tbody tr').count(), 6);
-  await page.locator('select').selectOption('1');
+  await page.locator('.columns select').selectOption('1');
   await page.locator('.multiselect summary').click();
   await page.getByRole('checkbox', { name: '1. Folio', exact: true }).uncheck();
   await page.getByRole('checkbox', { name: '2. Referencia', exact: true }).check();
@@ -67,6 +67,8 @@ test('file:// sin red, Worker, dos modos, descargas, cancelación y vista estrec
   await page.getByLabel('Ignorar acentos y diacríticos').check();
   await page.locator('.run').click();
   await completed(page);
+  assert.equal(await page.getByLabel('Formato de exportación').inputValue(), ';');
+  await page.getByLabel('Formato de exportación').selectOption(',');
   assert.deepEqual(await downloadText(page, page.locator('.download').nth(0)), ['COINCIDEN.csv', heading + anaRows]);
   assert.deepEqual(await downloadText(page, page.locator('.download').nth(1)), ['NO_COINCIDEN.csv', heading + '003,Lucía,verde,C\r\n004,,gris,D\r\n005,Cadiz,azul,E\r\n']);
   await page.getByLabel('Coincidencia parcial').check();
@@ -103,7 +105,7 @@ test('file:// sin red, Worker, dos modos, descargas, cancelación y vista estrec
   assert.equal(await page.getByRole('alert').innerText(), 'Operación cancelada.');
   assert.equal(await page.locator('.results').isVisible(), false);
   await page.getByRole('tab', { name: 'Comparar archivos' }).click();
-  assert.equal(await page.locator('select').inputValue(), '1');
+  assert.equal(await page.locator('.columns select').inputValue(), '1');
   assert.equal(await page.getByLabel('Ignorar acentos y diacríticos').isChecked(), true);
   await page.setViewportSize({ width: 360, height: 850 });
   await page.locator('.run').click();
@@ -143,7 +145,66 @@ test('un solo archivo, error tardío y recuperación sin Worker', async t => {
   await page.locator('.multiselect summary').press('Escape');
   await page.locator('.run').click();
   await completed(page);
-  assert.deepEqual(await downloadText(page, page.locator('.download')), ['BUSQUEDA_CSV2.csv', '\ufeffa,b\r\nz,x\r\n']);
+  assert.deepEqual(await downloadText(page, page.locator('.download')), ['BUSQUEDA_CSV2.csv', '\ufeffa;b\r\nz;x\r\n']);
+});
+
+test('quita cada archivo por separado, invalida resultados y conserva la búsqueda y sus acentos verdes', async t => {
+  const browser = await createBrowser(t);
+  const page = await browser.newPage({ offline: true });
+  await page.goto(indexURL);
+  const first = page.locator('.file-panel').first();
+  const second = page.locator('.file-panel').nth(1);
+  await selectFile(page, 1, 'clave,nota,\nlocal,uno,', 'primero.csv');
+  await loaded(page, 1);
+  await selectFile(page, 2, 'clave,nota,\nlocal,dos,', 'segundo.csv');
+  await loaded(page, 2);
+  const app = page.locator('csv-match');
+  const accents = () => app.evaluate(node => ['.tabs [aria-selected=true]', '.steps [aria-current] span', '.config > h2', '.run']
+    .map(selector => getComputedStyle(node.$(selector)).backgroundColor));
+  const compareColors = await accents();
+  await app.evaluate(node => {
+    window.keptFile = node.files[1];
+    node.$('.run').click();
+    if (![...node.ui.querySelectorAll('.remove-file, .file-input')].every(control => control.disabled)) {
+      throw new Error('Los controles de archivo deben quedar deshabilitados durante el proceso.');
+    }
+  });
+  await completed(page);
+  assert.deepEqual(await downloadText(page, page.locator('.download').first()), ['COINCIDEN.csv', '\ufeffclave;nota;\r\nlocal;uno;\r\n']);
+  await first.getByRole('button', { name: 'Quitar archivo' }).click();
+  assert.equal(await first.locator('.file-name').innerText(), 'Sin archivo');
+  assert.equal(await first.locator('.file-meta').innerText(), '');
+  assert.equal(await first.locator('table, .columns input, .columns select').count(), 0);
+  assert.equal(await app.evaluate(node => node.files[0] === null && node.files[1] === window.keptFile && !node.result), true);
+  assert.equal(await page.locator('.results').isVisible(), false);
+  assert.equal(await page.locator('.run').isEnabled(), false);
+
+  await page.getByRole('tab', { name: 'Buscar texto' }).click();
+  assert.equal(await page.getByLabel('CSV 2', { exact: true }).isChecked(), true);
+  await page.getByLabel('Texto que deseas buscar').fill('local');
+  const searchColors = await accents();
+  assert.ok(searchColors.every((color, index) => color !== compareColors[index]));
+  await page.locator('.run').click();
+  await completed(page);
+  assert.deepEqual(await downloadText(page, page.locator('.download')), ['BUSQUEDA_CSV2.csv', '\ufeffclave;nota;\r\nlocal;dos;\r\n']);
+  await selectFile(page, 1, 'clave,nota,\nlocal,uno,', 'primero.csv');
+  await loaded(page, 1);
+  await page.getByLabel('Ambos', { exact: true }).check();
+  await page.locator('.run').click();
+  await completed(page);
+  await app.evaluate(node => { window.keptFile = node.files[0]; });
+  await second.getByRole('button', { name: 'Quitar archivo' }).click();
+  assert.equal(await page.locator('.results').isVisible(), false);
+  assert.equal(await app.evaluate(node => node.files[1] === null && node.files[0] === window.keptFile), true);
+  assert.equal(await second.locator('.file-picker span').innerText(), 'Seleccionar archivo');
+  assert.equal(await page.getByLabel('CSV 1', { exact: true }).isChecked(), true);
+  await page.locator('.run').click();
+  await completed(page);
+  assert.deepEqual(await downloadText(page, page.locator('.download')), ['BUSQUEDA_CSV1.csv', '\ufeffclave;nota;\r\nlocal;uno;\r\n']);
+  await page.getByRole('tab', { name: 'Comparar archivos' }).click();
+  await page.mouse.move(0, 0);
+  assert.deepEqual((await accents()).slice(0, 3), compareColors.slice(0, 3));
+  assert.equal(await page.locator('.run').isEnabled(), false);
 });
 
 test('compara XLSX y CSV con punto y coma y exporta ambos orígenes sin red', async t => {
@@ -175,15 +236,15 @@ test('compara XLSX y CSV con punto y coma y exporta ambos orígenes sin red', as
   await loaded(page, 2);
   await page.locator('.run').click();
   await completed(page);
-  assert.deepEqual(await downloadText(page, page.locator('.download').first()), ['COINCIDEN.csv', '\ufeffID,Nota\r\n001,"a; b"\r\n123456789012345,General\r\n']);
-  assert.deepEqual(await downloadText(page, page.locator('.download').nth(1)), ['NO_COINCIDEN.csv', `\ufeffID,Nota\r\n002,"Texto\ncon salto"\r\n123456789012346,${markup}\r\n`]);
+  assert.deepEqual(await downloadText(page, page.locator('.download').first()), ['COINCIDEN.csv', '\ufeffID;Nota\r\n001;"a; b"\r\n123456789012345;General\r\n']);
+  assert.deepEqual(await downloadText(page, page.locator('.download').nth(1)), ['NO_COINCIDEN.csv', `\ufeffID;Nota\r\n002;"Texto\ncon salto"\r\n123456789012346;${markup}\r\n`]);
 
   await page.getByRole('tab', { name: 'Buscar texto' }).click();
   await page.getByLabel('Ambos', { exact: true }).check();
   await page.getByLabel('Texto que deseas buscar').fill('001');
   await page.locator('.run').click();
   await completed(page);
-  assert.deepEqual(await downloadText(page, page.locator('.download').nth(1)), ['BUSQUEDA_CSV2.csv', '\ufeffID,Nota\r\n001,"uno, dos"\r\n']);
+  assert.deepEqual(await downloadText(page, page.locator('.download').nth(1)), ['BUSQUEDA_CSV2.csv', '\ufeffID;Nota\r\n001;"uno, dos"\r\n']);
   assert.deepEqual(errors, []);
 });
 
@@ -234,7 +295,8 @@ test('integración por componente e iframe y escritura progresiva con un FileSys
   await page.evaluate(() => { window.showSaveFilePicker = async () => window.csvTestHandle; });
   await page.locator('.download').click();
   await page.getByText('Archivo guardado', { exact: true }).waitFor();
-  assert.equal(await page.evaluate(async () => (await window.csvTestHandle.getFile()).text()), `${wide}\r\n${wide}\r\n${wide}\r\n`);
+  const semicolonWide = wide.replaceAll(',', ';');
+  assert.equal(await page.evaluate(async () => (await window.csvTestHandle.getFile()).text()), `${semicolonWide}\r\n${semicolonWide}\r\n${semicolonWide}\r\n`);
   await page.evaluate(async () => {
     const handle = window.csvTestHandle;
     const original = await handle.createWritable();
@@ -364,13 +426,13 @@ test('descarga >32 MiB desde iframe del mismo origen, cancelación y límites de
   await fs.writeFile(portal, '<meta charset="utf-8"><iframe title="CSV MATCH" src="./CSV-MATCH/index.html"></iframe>');
   const line = `valor-${'m'.repeat(62)}`;
   const rows = 500000;
-  const expected = createHash('sha256').update('\ufeffcodigo\r\n');
+  const expected = createHash('sha256').update('\ufeffcodigo;nota;\r\n');
   const stream = await fs.open(sourcePath, 'w');
   try {
-    await stream.writeFile('codigo\n');
+    await stream.writeFile('codigo,nota,\n');
     for (let index = 0; index < rows; index += 5000) {
-      await stream.writeFile(`${line}\n`.repeat(5000));
-      expected.update(`${line}\r\n`.repeat(5000));
+      await stream.writeFile(`${line},detalle,\n`.repeat(5000));
+      expected.update(`${line};detalle;\r\n`.repeat(5000));
     }
   } finally { await stream.close(); }
   const expectedHash = expected.digest('hex');

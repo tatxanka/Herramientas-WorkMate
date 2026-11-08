@@ -497,8 +497,8 @@
       return { mode: 'search', reports };
     }
 
-    function csvLine(row) {
-      return row.map(value => /[",;\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(',') + '\r\n';
+    function csvLine(row, separator = ',') {
+      return row.map(value => /[",;\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(separator) + '\r\n';
     }
 
     async function validateXlsxArchive(bytes, job) {
@@ -705,17 +705,18 @@
       }
     }
 
-    async function exportCsv({ file, blocks, invert, expected, total, buffered, delimiter, measure, byteLimit }, job) {
+    async function exportCsv({ file, blocks, invert, expected, total, buffered, delimiter, outputDelimiter = ',', measure, byteLimit }, job) {
+      if (outputDelimiter !== ',' && outputDelimiter !== ';') throw new Error('Separador de exportación no válido.');
       const bitmap = new Bitmap(blocks);
       const encoder = new TextEncoder();
       let lines = ['\ufeff'];
       let bytesWritten = 0;
       let exported = 0;
       const { count } = await scan(file, {
-        header(row) { lines.push(csvLine(row)); },
+        header(row) { lines.push(csvLine(row, outputDelimiter)); },
         row(row, index) {
           if (bitmap.has(index) !== invert) {
-            lines.push(csvLine(row));
+            lines.push(csvLine(row, outputDelimiter));
             exported++;
           }
         },
