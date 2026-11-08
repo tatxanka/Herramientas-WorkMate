@@ -1,0 +1,35 @@
+# Local datasets, exports and audit files
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.xls
+*.xlsb
+*.ods
+*.jsonl
+*.local.*
+*.sqlite*
+*.db
+*.sql
+*.zip
+*.7z
+*.tar
+*.gz
+downloads/
+diagnostics/
+exports/
+fixtures-private/
+
+# Development and credentials
+node_modules/
+__pycache__/
+*.pyc
+*.log
+*.tmp
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+Thumbs.db
+.DS_Store
