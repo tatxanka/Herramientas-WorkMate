@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; worker-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>DIVIDER RECORDS</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <script defer src="vendor/sheetjs-0.20.3.js"></script>
+  <script defer src="js/archive.js"></script>
+  <script defer src="js/engine.js"></script>
+  <script defer src="js/bridge.js"></script>
+  <script defer src="js/app.js"></script>
+</head>
+<body>
+  <main class="frame" id="divider">
+    <header class="top">
+      <div class="identity">
+        <svg class="brand-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">
+          <path d="M7 4h17l7 7v11M7 4v39h14M24 4v8h7M13 18h11M13 24h8M13 30h8"/>
+          <path d="M25 32h10m0 0v-6h7m-7 6v7h7M39 23l3 3-3 3m0 7 3 3-3 3"/>
+        </svg>
+        <h1>DIVIDER <span>RECORDS</span></h1>
+      </div>
+      <p class="subtitle">Divide archivos CSV y XLSX en partes</p>
+      <ol class="steps" aria-label="Progreso de la tarea">
+        <li aria-current="step"><b>1</b> Cargar archivo</li><li><b>2</b> Configurar</li><li><b>3</b> Dividir</li>
+      </ol>
+    </header>
+
+    <div class="body">
+      <p class="notice error" id="error" role="alert" hidden></p>
+      <section class="panel source" aria-labelledby="source-title">
+        <h2 id="source-title">Archivo de origen <small>CSV o XLSX</small></h2>
+        <div class="panel-body">
+          <div class="file-line">
+            <div><strong id="filename">Sin archivo</strong> <small id="file-meta"></small></div>
+            <div class="actions">
+              <label class="button picker"><span id="file-action">Seleccionar archivo</span>
+                <input type="file" id="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="Seleccionar archivo CSV o XLSX">
+              </label>
+              <button id="remove" type="button" hidden>Quitar archivo</button>
+            </div>
+          </div>
+          <p class="hint" id="file-status">Selecciona un archivo para contar los registros y consultar su vista previa.</p>
+          <div class="source-options">
+            <label id="input-separator-field" hidden>Delimitador del CSV de origen
+              <select id="input-separator">
+                <option value="">Automático</option><option value=";">Punto y coma (;)</option><option value=",">Coma (,)</option>
+              </select>
+            </label>
+            <label id="sheet-field" hidden>Hoja del libro
+              <select id="sheet"></select>
+            </label>
+          </div>
+          <div id="preview-section" hidden>
+            <h3>Vista previa <small id="preview-meta"></small></h3>
+            <div class="table-wrap" tabindex="0" aria-label="Vista previa del archivo">
+              <table id="preview"></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="config-title">
+        <h2 id="config-title">Configuración de división</h2>
+        <div class="panel-body">
+          <div class="config-grid">
+            <label>Modalidad
+              <select id="mode">
+                <option value="records">Registros por archivo</option>
+                <option value="files">Número de archivos</option>
+              </select>
+            </label>
+            <label><span id="amount-label">Máximo de registros por archivo</span>
+              <input id="amount" type="text" inputmode="numeric" value="20000" maxlength="10" autocomplete="off" aria-labelledby="amount-label">
+            </label>
+            <label>Delimitador de salida
+              <select id="output-separator"><option value=";">Excel (España) · punto y coma</option><option value=",">CSV estándar · coma</option></select>
+            </label>
+            <label>Nombre base
+              <input id="base" type="text" maxlength="235" autocomplete="off" placeholder="Nombre del archivo original">
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="header" checked> La primera fila contiene encabezados</label>
+          <div id="plan" class="plan">
+            <p id="plan-status">El reparto aparecerá después de validar el archivo.</p>
+            <details id="plan-details" hidden><summary>Consultar partes previstas</summary>
+              <div id="plan-list"></div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="run-title">
+        <h2 id="run-title">Ejecución y resultados</h2>
+        <div class="panel-body">
+          <div class="run-row">
+            <button id="divide" type="button" class="primary" disabled>Dividir archivo</button>
+            <button id="direct" type="button" disabled>Guardar en carpeta…</button>
+            <button id="cancel" type="button" hidden>Cancelar</button>
+            <a id="new-tab" class="button" href="./index.html" target="_blank" rel="noopener" hidden>Abrir en otra pestaña ↗</a>
+          </div>
+          <p class="hint" id="direct-hint"></p>
+          <div id="progress-box" class="progress-box" hidden>
+            <div class="file-line"><strong id="phase" role="status"></strong><small id="elapsed"></small></div>
+            <progress id="progress" max="100" aria-label="Progreso del procesamiento"></progress>
+            <p class="hint" id="counters"></p>
+          </div>
+          <p id="info" class="notice" role="status" hidden></p>
+          <div id="results" hidden>
+            <div class="file-line">
+              <h3>División completada</h3>
+              <div class="actions">
+                <button id="zip" type="button">Descargar ZIP</button>
+                <button id="reset" type="button">Iniciar otra división</button>
+              </div>
+            </div>
+            <div class="metrics" id="integrity"></div>
+            <details class="details"><summary>Detalles de integridad</summary><p id="integrity-detail"></p></details>
+            <p class="hint">El CSV conserva el texto original. Una hoja de cálculo puede interpretar valores que comiencen por =, +, - o @ como fórmulas. Importa esas columnas como texto si el origen es desconocido.</p>
+            <div class="table-wrap" tabindex="0" aria-label="Archivos resultantes"><table id="parts"></table></div>
+            <nav class="pages" id="part-pages" aria-label="Páginas de resultados" hidden>
+              <button id="previous" type="button">Anterior</button><span id="page-label"></span><button id="next" type="button">Siguiente</button>
+            </nav>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <noscript>Activa JavaScript para utilizar DIVIDER RECORDS.</noscript>
+</body>
+</html>
